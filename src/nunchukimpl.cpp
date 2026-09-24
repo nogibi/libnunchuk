@@ -1766,9 +1766,8 @@ AppSettings NunchukImpl::UpdateAppSettings(const AppSettings& settings) {
 }
 
 std::string NunchukImpl::HandleJadePinQR(
-    const std::vector<std::string>& qr_data, bool allow_custom_server) {
-  return jade::HandlePinQr(qr_data, app_settings_.get_certificate_file(),
-                           allow_custom_server);
+    const std::vector<std::string>& qr_data) {
+  return jade::HandlePinQr(qr_data, app_settings_.get_certificate_file());
 }
 
 std::vector<std::string> NunchukImpl::ExportJadePinQR(const std::string& pin,

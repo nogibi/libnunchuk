@@ -326,13 +326,6 @@ JadeStep JadeSession::initialize() {
 JadeStep JadeSession::onData(std::span<const unsigned char> data) {
   std::lock_guard<std::mutex> lock(mutex_);
   try {
-    if (pending_http_.has_value()) {
-      JadeStep step;
-      step.type = JadeStepType::CUSTOM_SERVER_APPROVAL;
-      step.interaction = UserInteraction::APPROVE_PINSERVER;
-      step.custom_server = pending_http_->custom_server;
-      return step;
-    }
     if (command_ == Command::NONE || expected_id_.empty()) {
       return fail(JadeErrorCode::INVALID_STATE,
                   "Jade session is not awaiting device data");
@@ -351,30 +344,6 @@ JadeStep JadeSession::onData(std::span<const unsigned char> data) {
     return step;
   } catch (const std::exception& e) {
     return fail(JadeErrorCode::INVALID_RESPONSE, e.what());
-  }
-}
-
-JadeStep JadeSession::confirmCustomPinServer(bool approved) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!pending_http_.has_value() || !expected_id_.empty()) {
-    return fail(JadeErrorCode::INVALID_STATE,
-                "Jade is not awaiting custom pinserver approval");
-  }
-  if (!approved) {
-    return failHttp(JadeErrorCode::CUSTOM_SERVER_REJECTED,
-                    "Custom Jade pinserver was rejected");
-  }
-
-  PendingHttp pending = std::move(*pending_http_);
-  pending_http_.reset();
-  try {
-    const auto response =
-        PerformHttpRequest(pending.request, certificate_file_, true);
-    return sendRpc(pending.request.on_reply,
-                   BuildHttpReplyParams(pending.request, response.body), phase_,
-                   interaction_);
-  } catch (const std::exception& e) {
-    return failHttp(JadeErrorCode::HTTP, e.what());
   }
 }
 
@@ -923,17 +892,9 @@ JadeStep JadeSession::handleHttpRequest(const nlohmann::json& result) {
     return failHttp(JadeErrorCode::INVALID_RESPONSE, e.what());
   }
   try {
-    const auto response = PerformHttpRequest(request, certificate_file_, false);
-    if (response.custom_server.has_value()) {
-      pending_http_ = PendingHttp{std::move(request), *response.custom_server};
-      JadeStep step;
-      step.type = JadeStepType::CUSTOM_SERVER_APPROVAL;
-      step.interaction = UserInteraction::APPROVE_PINSERVER;
-      step.custom_server = response.custom_server;
-      return step;
-    }
+    const auto response = PerformHttpRequest(request, certificate_file_);
     return sendRpc(request.on_reply,
-                   BuildHttpReplyParams(request, response.body), phase_,
+                   BuildHttpReplyParams(request, response), phase_,
                    interaction_);
   } catch (const std::exception& e) {
     return failHttp(JadeErrorCode::HTTP, e.what());
@@ -1064,7 +1025,6 @@ void JadeSession::resetCommand() {
   interaction_ = UserInteraction::NONE;
   expected_id_.clear();
   wallet_context_.reset();
-  pending_http_.reset();
   psbt_original_id_.clear();
   psbt_expected_seqnum_ = 0;
   psbt_seqlen_ = 0;

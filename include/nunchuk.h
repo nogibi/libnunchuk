@@ -21,7 +21,6 @@
 #include <optional>
 #include <set>
 #include "utils/errorutils.hpp"
-#include "utils/jade/types.hpp"
 #define NUNCHUK_EXPORT
 
 #include <functional>
@@ -419,22 +418,7 @@ class NUNCHUK_EXPORT JadeException : public BaseException {
   static const int QR_PIN_UNLOCK = -8000;
   static const int INVALID_PARAMETER = -8001;
   static const int SERVER_REQUEST_ERROR = -8002;
-  static const int CUSTOM_SERVER_REQUIRES_APPROVAL = -8003;
   using BaseException::BaseException;
-
-  JadeException(int code, const std::string& message,
-                jade::CustomPinServerInfo custom_server)
-      : BaseException(code, message),
-        custom_server_(std::move(custom_server)) {}
-
-  // Present these details before retrying QR PIN unlock with approval.
-  const std::optional<jade::CustomPinServerInfo>& get_custom_server() const
-      noexcept {
-    return custom_server_;
-  }
-
- private:
-  std::optional<jade::CustomPinServerInfo> custom_server_;
 };
 
 class NUNCHUK_EXPORT Device {
@@ -1649,8 +1633,8 @@ class NUNCHUK_EXPORT Nunchuk {
   virtual AppSettings GetAppSettings() = 0;
   virtual AppSettings UpdateAppSettings(const AppSettings& appSettings) = 0;
 
-  virtual std::string HandleJadePinQR(const std::vector<std::string>& qr_data,
-                                      bool allow_custom_server = false) = 0;
+  virtual std::string HandleJadePinQR(
+      const std::vector<std::string>& qr_data) = 0;
   virtual std::vector<std::string> ExportJadePinQR(const std::string& pin,
                                                    int fragment_len = 200) = 0;
 

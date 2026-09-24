@@ -35,7 +35,6 @@ class JadeSession {
 
   JadeStep initialize();
   JadeStep onData(std::span<const unsigned char> data);
-  JadeStep confirmCustomPinServer(bool approved);
 
   JadeStep getVersionInfo();
   JadeStep getExtendedPublicKey(const std::string& derivation_path);
@@ -115,11 +114,6 @@ class JadeSession {
     std::vector<unsigned char> signer_commitment;
   };
 
-  struct PendingHttp {
-    JadeHttpRequest request;
-    CustomPinServerInfo custom_server;
-  };
-
   JadeStep sendRpc(const std::string& method,
                    const std::optional<nlohmann::json>& params, Phase phase,
                    UserInteraction interaction = UserInteraction::NONE);
@@ -157,7 +151,6 @@ class JadeSession {
   std::optional<std::string> root_fingerprint_;
   std::optional<WalletContext> wallet_context_;
   std::optional<MessageContext> message_context_;
-  std::optional<PendingHttp> pending_http_;
   std::string psbt_original_id_;
   uint32_t psbt_expected_seqnum_ = 0;
   uint32_t psbt_seqlen_ = 0;
