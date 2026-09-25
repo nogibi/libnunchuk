@@ -816,7 +816,8 @@ std::string SatochipSignPsbt(
         auto secnonce = consumeSecNonceFn(session_id.GetHex());
         if (!secnonce || secnonce->empty()) {
           throw std::runtime_error(
-              "MuSig2 session unavailable. Start a new signing session.");
+              "Signing session unavailable. Delete this transaction and "
+              "create a new one.");
         }
 
         auto sign_data = get_satochip_musig2_sign_data(
