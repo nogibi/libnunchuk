@@ -106,7 +106,8 @@ std::string SatochipSignMessage(
 std::string SatochipSignPsbt(
     const SatochipSignPsbtParams &params, const std::string &xfp,
     const std::string &psbt, const CardMusig2SaveSecNonceFn &saveSecNonceFn,
-    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn);
+    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn,
+    const std::vector<SingleSigner> &signers);
 
 }  // namespace nunchuk
 

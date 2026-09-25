@@ -3592,8 +3592,9 @@ Transaction NunchukImpl::SignLiquidTransaction(const std::string& wallet_id,
 void NunchukImpl::AddSatochip(const std::string& xfp,
                               const std::string& raw_name) {
   if (!Utils::IsValidFingerPrint(xfp)) {
-    throw NunchukException(NunchukException::INVALID_PARAMETER,
-                           "Invalid Satochip fingerprint.");
+    throw NunchukException(
+        NunchukException::INVALID_PARAMETER,
+        "Key fingerprint must be exactly 8 hexadecimal characters.");
   }
   const auto id = to_lower_copy(xfp);
   const auto name = trim_copy(raw_name);
@@ -3628,10 +3629,6 @@ void NunchukImpl::CacheSatochipMasterSignerXPub(
     throw NunchukException(NunchukException::INVALID_SIGNER_TYPE,
                            "Expected a Satochip master signer.");
   }
-  if (SatochipGetMasterFingerprint(cardBip32GetExtendedKeyFn) != id) {
-    throw NunchukException(NunchukException::INVALID_PARAMETER,
-                           "Satochip does not match the registered signer.");
-  }
   storage_->CacheMasterSignerXPub(
       chain_, id,
       [&](const std::string& path) {
@@ -3664,16 +3661,17 @@ SingleSigner NunchukImpl::GetSignerFromSatochipMasterSigner(
     throw NunchukException(NunchukException::INVALID_SIGNER_TYPE,
                            "Expected a Satochip master signer.");
   }
-  if (SatochipGetMasterFingerprint(cardBip32GetExtendedKeyFn) != id) {
-    throw NunchukException(NunchukException::INVALID_PARAMETER,
-                           "Satochip does not match the registered signer.");
-  }
   try {
     return storage_->GetSignerFromMasterSigner(chain_, id, path);
   } catch (NunchukException& ex) {
     if (ex.code() != NunchukException::RUN_OUT_OF_CACHED_XPUB) {
       throw;
     }
+  }
+  if (SatochipGetMasterFingerprint(cardBip32GetExtendedKeyFn) != id) {
+    throw NunchukException(
+        NunchukException::INVALID_PARAMETER,
+        "Wrong Satochip card. Use the card for the selected key.");
   }
   auto xpub =
       SatochipGetXpub(cardBip32GetExtendedKeyFn, path, chain_ != Chain::MAIN);
@@ -3705,8 +3703,9 @@ std::string NunchukImpl::SignSatochipTransaction(
                      return master_fingerprint ==
                             signer.get_master_fingerprint();
                    })) {
-    throw NunchukException(NunchukException::INVALID_PARAMETER,
-                           "Key is not part of wallet.");
+    throw NunchukException(
+        NunchukException::INVALID_PARAMETER,
+        "Wrong Satochip card. Use a card associated with this wallet.");
   }
   auto local_db = storage_->GetLocalDb(chain_);
   auto save_sec_nonce = [&](const std::string& session_id,
@@ -3726,7 +3725,7 @@ std::string NunchukImpl::SignSatochipTransaction(
     }
   };
   return SatochipSignPsbt(params, master_fingerprint, psbt, save_sec_nonce,
-                          consume_sec_nonce);
+                          consume_sec_nonce, wallet.get_signers());
 }
 
 Transaction NunchukImpl::SignSatochipTransaction(

@@ -680,8 +680,9 @@ std::string NunchukStorage::CreateSatochipMasterSigner(
              (!signer.get_public_key().empty() &&
               signer.get_public_key() != HexStr(pubkey)) ||
              (signer.get_xpub().empty() && signer.get_public_key().empty()))) {
-          throw NunchukException(NunchukException::INVALID_PARAMETER,
-                                 "Satochip does not match an existing signer.");
+          throw NunchukException(
+              NunchukException::INVALID_PARAMETER,
+              "This Satochip card does not contain the saved key.");
         }
         imported_xpubs.emplace(path, xpub);
       }
@@ -925,6 +926,12 @@ void NunchukStorage::CacheMasterSignerXPub0(
   auto signer_type = signer_db.GetSignerType();
   if (signer_type == SignerType::SATOCHIP_NFC && !first) {
     const auto root = getxpub("m");
+    const auto root_id = DecodeExtPubKey(root).pubkey.GetID();
+    if (HexStr(MakeUCharSpan(root_id).first(4)) != signer_db.GetFingerprint()) {
+      throw NunchukException(
+          NunchukException::INVALID_PARAMETER,
+          "Wrong Satochip card. Use the card for the selected key.");
+    }
     const auto cached_root = signer_db.GetXpub("m");
     if (cached_root.empty()) {
       auto signers = signer_db.GetSingleSigners(false);
@@ -935,14 +942,16 @@ void NunchukStorage::CacheMasterSignerXPub0(
         if ((!signer.get_xpub().empty() && signer.get_xpub() != xpub) ||
             (!signer.get_public_key().empty() &&
              signer.get_public_key() != HexStr(DecodeExtPubKey(xpub).pubkey))) {
-          throw NunchukException(NunchukException::INVALID_PARAMETER,
-                                 "Satochip does not match an imported key.");
+          throw NunchukException(
+              NunchukException::INVALID_PARAMETER,
+              "This Satochip card does not contain the imported key.");
         }
       }
       first = true;
     } else if (root != cached_root) {
-      throw NunchukException(NunchukException::INVALID_PARAMETER,
-                             "Satochip does not match the registered root.");
+      throw NunchukException(
+          NunchukException::INVALID_PARAMETER,
+          "Wrong Satochip card. Use the card originally added to Nunchuk.");
     }
   }
   bool is_software = signer_type == SignerType::SOFTWARE;
