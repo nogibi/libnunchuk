@@ -25,6 +25,8 @@
 
 namespace nunchuk {
 
+class SingleSigner;
+
 // Consume synchronously, clear copies, and throw on card errors.
 using CardBip32ImportSeedFn =
     std::function<void(const std::vector<unsigned char> &seed)>;
@@ -40,6 +42,7 @@ using CardBip32GetExtendedKeyFn =
     std::function<std::vector<std::vector<unsigned char>>(
         const std::string &path)>;
 
+// Returns DER or throws; 2FA uses HMAC-SHA1 over hash || 32 bytes of 0xCC.
 using CardSignTransactionHashFn = std::function<std::vector<unsigned char>(
     unsigned char keynbr, const std::vector<unsigned char> &txhash,
     const std::optional<std::vector<unsigned char>> &chalresponse)>;
@@ -92,6 +95,13 @@ struct SatochipSignPsbtParams {
 
 std::string SatochipGetMasterFingerprint(
     const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn);
+
+// Returns a Base64 compact signature; keep both callbacks on one card session.
+std::string SatochipSignMessage(
+    const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
+    const CardSignTransactionHashFn &cardSignTransactionHashFn,
+    const SingleSigner &signer, const std::string &message,
+    const std::optional<std::vector<unsigned char>> &chalresponse);
 
 std::string SatochipSignPsbt(
     const SatochipSignPsbtParams &params, const std::string &xfp,

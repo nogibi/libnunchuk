@@ -2323,6 +2323,12 @@ class NUNCHUK_EXPORT Nunchuk {
       const CardBip32GetExtendedKeyFn& cardBip32GetExtendedKeyFn,
       const std::string& master_signer_id, const WalletType& wallet_type,
       const AddressType& address_type, int index) = 0;
+  virtual std::string SignSatochipMessage(
+      const CardBip32GetExtendedKeyFn& cardBip32GetExtendedKeyFn,
+      const CardSignTransactionHashFn& cardSignTransactionHashFn,
+      const SingleSigner& signer, const std::string& message,
+      const std::optional<std::vector<unsigned char>>& chalresponse =
+          std::nullopt) = 0;
   virtual std::string SignSatochipTransaction(
       const SatochipSignPsbtParams& params, const Wallet& wallet,
       const std::string& psbt) = 0;

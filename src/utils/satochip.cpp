@@ -15,6 +15,8 @@
  * along with libnunchuk. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <common/signmessage.h>
+#include <key_io.h>
 #include <psbt.h>
 #include <hash.h>
 #include <musig.h>
@@ -39,6 +41,7 @@
 #include "span.h"
 #include "txutils.hpp"
 #include "util/bip32.h"
+#include "util/strencodings.h"
 #include "utils/satochip.hpp"
 
 namespace nunchuk {
@@ -497,6 +500,47 @@ std::string SatochipGetMasterFingerprint(
   auto master_xpub_id = compress_card_pubkey(master[0]).GetID();
   auto master_fingerprint = MakeUCharSpan(master_xpub_id).first(4);
   return HexStr(master_fingerprint);
+}
+
+std::string SatochipSignMessage(
+    const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
+    const CardSignTransactionHashFn &cardSignTransactionHashFn,
+    const SingleSigner &signer, const std::string &message,
+    const std::optional<std::vector<unsigned char>> &chalresponse) {
+  if (!cardBip32GetExtendedKeyFn || !cardSignTransactionHashFn) {
+    throw NunchukException(NunchukException::INVALID_PARAMETER,
+                           "[Satochip] missing message signing callback.");
+  }
+  auto path = signer.get_derivation_path();
+  std::replace(path.begin(), path.end(), 'h', '\'');
+  auto pubkey = signer.get_xpub().empty()
+                    ? CPubKey(ParseHex(signer.get_public_key()))
+                    : DecodeExtPubKey(signer.get_xpub()).pubkey;
+  pubkey = compress_card_pubkey({pubkey.begin(), pubkey.end()});
+  cardBip32GetExtendedKeyFn(path);
+  const auto hash = MessageHash(message);
+  const auto der =
+      cardSignTransactionHashFn(0xff, {hash.begin(), hash.end()}, chalresponse);
+  secp256k1_ecdsa_signature signature;
+  if (der.empty() || !secp256k1_ecdsa_signature_parse_der(
+                         secp_ctx, &signature, der.data(), der.size())) {
+    throw NunchukException(NunchukException::INVALID_SIGNATURE,
+                           "Satochip returned an invalid message signature.");
+  }
+  secp256k1_ecdsa_signature_normalize(secp_ctx, &signature, &signature);
+  std::vector<unsigned char> compact(CPubKey::COMPACT_SIGNATURE_SIZE);
+  secp256k1_ecdsa_signature_serialize_compact(secp_ctx, compact.data() + 1,
+                                              &signature);
+  for (unsigned char recovery_id = 0; recovery_id < 4; ++recovery_id) {
+    compact[0] = 31 + recovery_id;
+    CPubKey recovered;
+    if (recovered.RecoverCompact(hash, compact) && recovered == pubkey) {
+      return EncodeBase64(compact);
+    }
+  }
+  throw NunchukException(
+      NunchukException::INVALID_SIGNATURE,
+      "Could not verify the message signature. Check the selected card.");
 }
 
 std::string SatochipSignPsbt(
