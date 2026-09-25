@@ -887,21 +887,19 @@ std::string SatochipSignPsbt(
               continue;
             }
 
-            if (leaf_hashes.empty()) {
-              bool key_path_processed = false;
-              if (!input.m_tap_internal_key.IsNull()) {
-                key_path_processed = process_musig2_session(
-                    my_pubkey, aggregate_pubkey, participants,
-                    input.m_tap_internal_key, &input.m_tap_merkle_root, nullptr,
-                    SigVersion::TAPROOT, true);
-              }
-              if (!key_path_processed) {
-                key_path_processed = process_musig2_session(
-                    my_pubkey, aggregate_pubkey, participants, *output_key,
-                    nullptr, nullptr, SigVersion::TAPROOT, true);
-              }
-              processed |= key_path_processed;
+            bool key_path_processed = false;
+            if (!input.m_tap_internal_key.IsNull()) {
+              key_path_processed = process_musig2_session(
+                  my_pubkey, aggregate_pubkey, participants,
+                  input.m_tap_internal_key, &input.m_tap_merkle_root, nullptr,
+                  SigVersion::TAPROOT, true);
             }
+            if (!key_path_processed) {
+              key_path_processed = process_musig2_session(
+                  my_pubkey, aggregate_pubkey, participants, *output_key,
+                  nullptr, nullptr, SigVersion::TAPROOT, true);
+            }
+            processed |= key_path_processed;
 
             for (const auto &[candidate_xonly, candidate_leaf_pair] :
                  input.m_tap_bip32_paths) {
