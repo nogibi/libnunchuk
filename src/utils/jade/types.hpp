@@ -21,9 +21,8 @@ namespace nunchuk::jade {
 enum class JadeStepType {
   WRITE,
   READ_MORE,
-  CUSTOM_SERVER_APPROVAL,
-  COMPLETE,
-  FAILED,
+  COMPLETE = 3,
+  FAILED = 4,
 };
 
 enum class UserInteraction {
@@ -34,7 +33,6 @@ enum class UserInteraction {
   REGISTER_WALLET,
   SIGN_MESSAGE,
   SIGN_TRANSACTION,
-  APPROVE_PINSERVER,
 };
 
 enum class JadeErrorCode {
@@ -48,7 +46,6 @@ enum class JadeErrorCode {
   INVALID_PSBT = 7,
   WALLET_NOT_REGISTERED = 8,
   HTTP = 9,
-  CUSTOM_SERVER_REJECTED = 10,
   TOR_REQUIRED = 11,
   ANTI_EXFIL = 12,
   SESSION_LOST = 13,
@@ -65,17 +62,10 @@ struct JadeError {
   std::string device_data;
 };
 
-struct CustomPinServerInfo {
-  std::vector<std::string> urls;
-  std::string method;
-  std::string host;
-};
-
 struct JadeStep {
   JadeStepType type = JadeStepType::READ_MORE;
   UserInteraction interaction = UserInteraction::NONE;
   std::vector<std::vector<unsigned char>> writes;
-  std::optional<CustomPinServerInfo> custom_server;
   std::optional<JadeError> error;
 };
 

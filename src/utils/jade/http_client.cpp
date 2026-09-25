@@ -44,7 +44,6 @@ constexpr std::string_view OFFICIAL_ONION_HOST =
     "mrrxtq6tjpbnbm7vh5jt6mpjctn7ggyfy5wegvbeff3x7jrznqawlmid.onion";
 
 struct ParsedUrl {
-  std::string original;
   std::string scheme;
   std::string host;
   std::string port;
@@ -65,7 +64,6 @@ ParsedUrl ParseUrl(const std::string& value) {
   }
 
   ParsedUrl result;
-  result.original = value;
   result.scheme = boost::algorithm::to_lower_copy(value.substr(0, separator));
   if (result.scheme != "http" && result.scheme != "https") {
     throw std::invalid_argument("Unsupported Jade pinserver URL scheme");
@@ -142,22 +140,6 @@ bool IsOfficial(const ParsedUrl& url) {
   return std::any_of(std::begin(OFFICIAL_CLEARNET_HOSTS),
                      std::end(OFFICIAL_CLEARNET_HOSTS),
                      [&](std::string_view host) { return url.host == host; });
-}
-
-std::optional<ParsedUrl> SelectUrl(const std::vector<ParsedUrl>& urls,
-                                   bool custom_only) {
-  auto allowed = [&](const ParsedUrl& url) {
-    return !custom_only || !IsOfficial(url);
-  };
-  const auto secure = std::find_if(
-      urls.begin(), urls.end(),
-      [&](const ParsedUrl& url) { return allowed(url) && url.secure; });
-  if (secure != urls.end()) return *secure;
-  const auto insecure = std::find_if(
-      urls.begin(), urls.end(),
-      [&](const ParsedUrl& url) { return allowed(url) && !url.secure; });
-  if (insecure != urls.end()) return *insecure;
-  return std::nullopt;
 }
 
 httplib::Request MakeRequest(const JadeHttpRequest& request,
@@ -272,9 +254,9 @@ nlohmann::json DecodeResponse(const JadeHttpRequest& request,
 nlohmann::json PerformWithRedirects(const JadeHttpRequest& request,
                                     const std::string& certificate_file,
                                     ParsedUrl url, bool custom_request) {
-  const std::string approved_scheme = url.scheme;
-  const std::string approved_host = url.host;
-  const std::string approved_port = url.port;
+  const std::string original_scheme = url.scheme;
+  const std::string original_host = url.host;
+  const std::string original_port = url.port;
   for (int redirects = 0; redirects <= MAX_REDIRECTS; ++redirects) {
     const auto response = ExecuteRequest(request, certificate_file, url);
     if (response.status >= 300 && response.status < 400 &&
@@ -283,12 +265,12 @@ nlohmann::json PerformWithRedirects(const JadeHttpRequest& request,
         throw std::runtime_error("Jade pinserver redirect limit exceeded");
       }
       auto redirected = ParseUrl(response.location);
-      if ((custom_request && (redirected.scheme != approved_scheme ||
-                              redirected.host != approved_host ||
-                              redirected.port != approved_port)) ||
+      if ((custom_request && (redirected.scheme != original_scheme ||
+                              redirected.host != original_host ||
+                              redirected.port != original_port)) ||
           (!custom_request && !IsOfficial(redirected))) {
         throw std::runtime_error(
-            "Jade pinserver redirected to an unapproved host");
+            "Jade pinserver redirected to a disallowed destination");
       }
       url = std::move(redirected);
       continue;
@@ -300,35 +282,19 @@ nlohmann::json PerformWithRedirects(const JadeHttpRequest& request,
 
 }  // namespace
 
-JadeHttpResult PerformHttpRequest(const JadeHttpRequest& request,
-                                  const std::string& certificate_file,
-                                  bool custom_servers_only) {
+nlohmann::json PerformHttpRequest(const JadeHttpRequest& request,
+                                  const std::string& certificate_file) {
   std::vector<ParsedUrl> urls;
   urls.reserve(request.urls.size());
   for (const auto& value : request.urls) urls.push_back(ParseUrl(value));
-
-  const auto selected = SelectUrl(urls, custom_servers_only);
-  if (!selected.has_value()) {
+  if (urls.empty()) {
     throw std::runtime_error("No usable Jade pinserver URL is available");
   }
-
-  const bool custom_request = !IsOfficial(*selected);
-  if (!custom_servers_only && custom_request) {
-    CustomPinServerInfo info;
-    info.method = request.method;
-    info.host = selected->host.find(':') == std::string::npos
-                    ? selected->host
-                    : "[" + selected->host + "]";
-    if (!IsDefaultPort(*selected)) info.host += ":" + selected->port;
-    for (const auto& url : urls) {
-      if (!IsOfficial(url)) info.urls.push_back(url.original);
-    }
-    return {{}, std::move(info)};
-  }
-
-  return {PerformWithRedirects(request, certificate_file, *selected,
-                               custom_request),
-          std::nullopt};
+  auto selected = std::find_if(urls.begin(), urls.end(),
+                               [](const ParsedUrl& url) { return url.secure; });
+  if (selected == urls.end()) selected = urls.begin();
+  return PerformWithRedirects(request, certificate_file, *selected,
+                               !IsOfficial(*selected));
 }
 
 JadeHttpRequest ParseHttpRequest(const nlohmann::json& result) {

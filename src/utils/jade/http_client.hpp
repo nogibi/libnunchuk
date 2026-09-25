@@ -17,7 +17,6 @@
 #include <string>
 #include <vector>
 
-#include "utils/jade/types.hpp"
 #include "utils/json.hpp"
 
 namespace nunchuk::jade {
@@ -31,14 +30,8 @@ struct JadeHttpRequest {
   std::string on_reply;
 };
 
-struct JadeHttpResult {
-  nlohmann::json body;
-  std::optional<CustomPinServerInfo> custom_server;
-};
-
-JadeHttpResult PerformHttpRequest(const JadeHttpRequest& request,
-                                  const std::string& certificate_file,
-                                  bool custom_servers_only = false);
+nlohmann::json PerformHttpRequest(const JadeHttpRequest& request,
+                                  const std::string& certificate_file);
 
 JadeHttpRequest ParseHttpRequest(const nlohmann::json& result);
 nlohmann::json BuildHttpReplyParams(const JadeHttpRequest& request,

@@ -51,8 +51,7 @@ constexpr bool IsJadeUsbDevice(uint16_t vendor_id, uint16_t product_id) {
 }
 
 std::string HandlePinQr(const std::vector<std::string>& qr_data,
-                        const std::string& certificate_file,
-                        bool allow_custom_server = false);
+                        const std::string& certificate_file);
 
 std::vector<std::string> ExportPinQr(const std::string& pin,
                                      int fragment_len = 200);

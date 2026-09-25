@@ -23,8 +23,7 @@
 namespace nunchuk::jade {
 
 std::string HandlePinQr(const std::vector<std::string>& qr_data,
-                        const std::string& certificate_file,
-                        bool allow_custom_server) {
+                        const std::string& certificate_file) {
   ur::URDecoder decoder;
   for (const auto& part : qr_data) decoder.receive_part(part);
   if (!decoder.is_complete() || !decoder.is_success()) {
@@ -45,29 +44,12 @@ std::string HandlePinQr(const std::vector<std::string>& qr_data,
                           "[Jade] Invalid auth request id");
     }
     const auto request = ParseHttpRequest(data.at("result"));
-    const auto perform = [&](bool custom_servers_only) {
-      try {
-        return PerformHttpRequest(request, certificate_file,
-                                  custom_servers_only);
-      } catch (const std::exception& e) {
-        throw JadeException(JadeException::SERVER_REQUEST_ERROR,
-                            "[Jade] " + std::string(e.what()));
-      }
-    };
-    auto response = perform(false);
-
-    if (response.custom_server.has_value()) {
-      if (!allow_custom_server) {
-        std::string error = "Custom Jade pinserver requires approval";
-        if (!response.custom_server->host.empty()) {
-          error += ": " + response.custom_server->host;
-        }
-        throw JadeException(JadeException::CUSTOM_SERVER_REQUIRES_APPROVAL,
-                            "[Jade] " + error, *response.custom_server);
-      }
-      response = perform(true);
+    try {
+      return PerformHttpRequest(request, certificate_file).dump();
+    } catch (const std::exception& e) {
+      throw JadeException(JadeException::SERVER_REQUEST_ERROR,
+                          "[Jade] " + std::string(e.what()));
     }
-    return response.body.dump();
   } catch (const JadeException&) {
     throw;
   } catch (const nlohmann::json::exception& e) {
