@@ -563,8 +563,33 @@ std::string SatochipSignPsbt(
   if (my_xfp.size() != 4) {
     throw std::runtime_error("[Satochip] invalid master fingerprint.");
   }
+  if (params.progress) params.progress(0);
   auto psbt = DecodePsbt(base64_psbt);
   const PrecomputedTransactionData txdata = PrecomputePSBTData(psbt);
+
+  size_t current_input = 0;
+  size_t key_index = 0;
+  size_t key_count = 0;
+  int last_progress = 0;
+  auto report_progress = [&](double completed_inputs) {
+    if (!params.progress) return;
+    int percent = std::min(
+        99, static_cast<int>(completed_inputs * 100 / psbt.tx->vin.size()));
+    if (percent > last_progress) {
+      last_progress = percent;
+      params.progress(percent);
+    }
+  };
+  auto report_key_progress = [&](int step, int steps) {
+    report_progress(current_input +
+                    (key_index - 1 + static_cast<double>(step) / steps) /
+                        key_count);
+  };
+  auto is_my_key = [&](const KeyOriginInfo &origin) {
+    return std::equal(std::begin(origin.fingerprint),
+                      std::end(origin.fingerprint), my_xfp.begin(),
+                      my_xfp.end());
+  };
 
   auto cardBip32GetExtendedKeyFn =
       [&, cur_path = std::string(),
@@ -604,6 +629,9 @@ std::string SatochipSignPsbt(
       return true;
     }
 
+    key_count = std::count_if(
+        input.m_tap_bip32_paths.begin(), input.m_tap_bip32_paths.end(),
+        [&](const auto &entry) { return is_my_key(entry.second.second); });
     const int sighash_type = input.sighash_type.value_or(SIGHASH_DEFAULT);
 
     std::string signing_path;
@@ -646,13 +674,16 @@ std::string SatochipSignPsbt(
             "[Satochip] missing Schnorr key preparation callback.");
       }
       cardBip32GetExtendedKeyFn(signing_path);
+      report_key_progress(1, 3);
       // Zero selects the no-tree tweak; bypass preserves the BIP32 key.
       // Reprepare each time: signing overwrites the applet's key slot.
       params.cardTaprootTweakPrivateKeyFn(
           0xff, std::vector<unsigned char>(32, 0), !tweak_key);
+      report_key_progress(2, 3);
       auto signature = params.cardSignSchnorrHashFn({hash.begin(), hash.end()},
                                                     params.chalresponse);
       check_schnorr_signature(verify_key, hash, signature);
+      report_key_progress(3, 3);
       append_taproot_sighash(signature, sighash_type);
       return signature;
     };
@@ -780,6 +811,7 @@ std::string SatochipSignPsbt(
         }
 
         cardBip32GetExtendedKeyFn(signing_path);
+        report_key_progress(1, 2);
         uint256 session_id =
             MuSig2SessionID(setup->script_pubkey, my_pubkey, hash);
         auto secnonce = consumeSecNonceFn(session_id.GetHex());
@@ -805,6 +837,7 @@ std::string SatochipSignPsbt(
             uint256{std::span<const unsigned char>(partial_sig.data(),
                                                    partial_sig.size())};
         aggregate_sig();
+        report_key_progress(2, 2);
         return true;
       }
 
@@ -824,6 +857,7 @@ std::string SatochipSignPsbt(
         GetStrongRandBytes(
             std::span<unsigned char>(extra.data(), extra.size()));
         cardBip32GetExtendedKeyFn(signing_path);
+        report_key_progress(1, 2);
         auto nonce_resp = params.cardMusig2GenerateNonceFn(
             0xff, aggregate_xonly_bytes, {hash.begin(), hash.end()}, extra);
         if (nonce_resp.size() < 2 ||
@@ -837,6 +871,7 @@ std::string SatochipSignPsbt(
             MuSig2SessionID(setup->script_pubkey, my_pubkey, hash);
         saveSecNonceFn(session_id.GetHex(), nonce_resp[1]);
         pubnonces[my_pubkey] = std::move(nonce_resp[0]);
+        report_key_progress(2, 2);
       }
 
       return true;
@@ -884,10 +919,9 @@ std::string SatochipSignPsbt(
 
     for (const auto &[xonly_pub, leaf_pair] : input.m_tap_bip32_paths) {
       const auto &[leaf_hashes, key_origin] = leaf_pair;
-      bool is_my_key = std::equal(std::begin(key_origin.fingerprint),
-                                  std::end(key_origin.fingerprint),
-                                  my_xfp.begin(), my_xfp.end());
-      if (!is_my_key) continue;
+      if (!is_my_key(key_origin)) continue;
+      ++key_index;
+      report_key_progress(0, 1);
 
       signing_path = WriteHDKeypath(key_origin.path, true);
       const CPubKey my_pubkey = get_pubkey(key_origin);
@@ -953,14 +987,18 @@ std::string SatochipSignPsbt(
 
   auto sign_segwit_input = [&](int index, PSBTInput &input,
                                const CTxOut &utxo) {
+    key_count = std::count_if(
+        input.hd_keypaths.begin(), input.hd_keypaths.end(),
+        [&](const auto &entry) {
+          return is_my_key(entry.second) &&
+                 !input.partial_sigs.count(entry.first.GetID());
+        });
     int sighashType = input.sighash_type.value_or(SIGHASH_ALL);
     for (auto &&[pubkey, key_origin] : input.hd_keypaths) {
       if (input.partial_sigs.count(pubkey.GetID())) continue;
-      if (!std::equal(std::begin(key_origin.fingerprint),
-                      std::end(key_origin.fingerprint), my_xfp.begin(),
-                      my_xfp.end())) {
-        continue;
-      }
+      if (!is_my_key(key_origin)) continue;
+      ++key_index;
+      report_key_progress(0, 1);
 
       auto [scriptCode, sigversion] = get_segwit_scriptcode(utxo, input);
       auto hash = SignatureHash(scriptCode, *psbt.tx, index, sighashType,
@@ -969,6 +1007,7 @@ std::string SatochipSignPsbt(
         throw std::runtime_error("[Satochip] missing ECDSA signing callback.");
       }
       cardBip32GetExtendedKeyFn(WriteHDKeypath(key_origin.path, true));
+      report_key_progress(1, 2);
       auto signature = params.cardSignTransactionHashFn(
           0xff, {hash.begin(), hash.end()}, params.chalresponse);
       auto norm_signature = normalize_ecdsa_signature(signature, sighashType);
@@ -979,23 +1018,27 @@ std::string SatochipSignPsbt(
       }
       input.partial_sigs[pubkey.GetID()] =
           SigPair{pubkey, std::move(norm_signature)};
+      report_key_progress(2, 2);
     }
     return true;
   };
 
   for (size_t i = 0; i < psbt.tx->vin.size(); ++i) {
+    current_input = i;
+    key_index = 0;
     PSBTInput &input = psbt.inputs[i];
     CTxOut utxo;
-    if (!psbt.GetInputUTXO(utxo, i) || utxo.IsNull()) {
-      continue;
+    if (psbt.GetInputUTXO(utxo, i) && !utxo.IsNull()) {
+      if (!sign_taproot_input(i, input, utxo)) {
+        sign_segwit_input(i, input, utxo);
+      }
     }
-
-    if (!sign_taproot_input(i, input, utxo)) {
-      sign_segwit_input(i, input, utxo);
-    }
+    report_progress(i + 1);
   }
 
-  return EncodePsbt(psbt);
+  auto result = EncodePsbt(psbt);
+  if (params.progress) params.progress(100);
+  return result;
 }
 
 }  // namespace nunchuk

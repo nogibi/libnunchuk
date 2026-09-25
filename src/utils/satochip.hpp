@@ -91,6 +91,8 @@ struct SatochipSignPsbtParams {
   CardMusig2SignFn cardMusig2SignFn;
   // With 2FA, callbacks must obtain a response for each hash and algorithm.
   std::optional<std::vector<unsigned char>> chalresponse;
+  // Optional notification: estimated progress (0-100) for this signing pass.
+  std::function<void(int)> progress;
 };
 
 std::string SatochipGetMasterFingerprint(
