@@ -32,6 +32,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include "base58.h"
@@ -178,17 +179,13 @@ static void append_taproot_sighash(std::vector<unsigned char> &sig,
 
 static std::vector<unsigned char> sign_satochip_schnorr_hash(
     const SatochipSignPsbtParams &params, const XOnlyPubKey &verify_key,
-    const uint256 &hash, int sighash_type, bool tweak_key,
-    const std::function<void()> &operation_done) {
+    const uint256 &hash, int sighash_type, bool tweak_key) {
   // Zero selects the no-tree tweak; bypass preserves the BIP32 key.
   // Reprepare each time: signing overwrites the applet's key slot.
   params.cardTaprootTweakPrivateKeyFn(0xff, std::vector<unsigned char>(32, 0),
                                       !tweak_key);
-  operation_done();
-  auto signature = params.cardSignSchnorrHashFn({hash.begin(), hash.end()},
-                                                params.chalresponse);
+  auto signature = params.cardSignSchnorrHashFn({hash.begin(), hash.end()});
   check_schnorr_signature(verify_key, hash, signature);
-  operation_done();
   append_taproot_sighash(signature, sighash_type);
   return signature;
 }
@@ -534,8 +531,7 @@ std::string SatochipGetMasterFingerprint(
 std::string SatochipSignMessage(
     const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
     const CardSignTransactionHashFn &cardSignTransactionHashFn,
-    const SingleSigner &signer, const std::string &message,
-    const std::optional<std::vector<unsigned char>> &chalresponse) {
+    const SingleSigner &signer, const std::string &message) {
   if (!cardBip32GetExtendedKeyFn || !cardSignTransactionHashFn) {
     throw NunchukException(NunchukException::INVALID_PARAMETER,
                            "[Satochip] missing message signing callback.");
@@ -548,8 +544,7 @@ std::string SatochipSignMessage(
   pubkey = compress_card_pubkey({pubkey.begin(), pubkey.end()});
   cardBip32GetExtendedKeyFn(path);
   const auto hash = MessageHash(message);
-  const auto der =
-      cardSignTransactionHashFn(0xff, {hash.begin(), hash.end()}, chalresponse);
+  const auto der = cardSignTransactionHashFn(0xff, {hash.begin(), hash.end()});
   secp256k1_ecdsa_signature signature;
   if (der.empty() || !secp256k1_ecdsa_signature_parse_der(
                          secp_ctx, &signature, der.data(), der.size())) {
@@ -734,15 +729,13 @@ static bool origin_matches_fingerprint(const KeyOriginInfo &origin,
 }
 
 static bool process_satochip_musig2_session(
-    const SatochipSignPsbtParams &params,
-    const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
-    PartiallySignedTransaction &psbt, const PrecomputedTransactionData &txdata,
-    int index, const XOnlyPubKey &output_key, const CPubKey &my_pubkey,
+    const SatochipSignPsbtParams &params, PartiallySignedTransaction &psbt,
+    const PrecomputedTransactionData &txdata, int index,
+    const XOnlyPubKey &output_key, const CPubKey &my_pubkey,
     const CPubKey &aggregate_pubkey, const XOnlyPubKey &script_xonly,
     const uint256 *merkle_root, const uint256 *leaf_hash,
     const CardMusig2SaveSecNonceFn &saveSecNonceFn,
-    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn,
-    const std::function<void()> &operation_done) {
+    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn) {
   auto &input = psbt.inputs[index];
   const auto &participants = input.m_musig2_participants.at(aggregate_pubkey);
   const int sighash_type = input.sighash_type.value_or(SIGHASH_DEFAULT);
@@ -788,7 +781,7 @@ static bool process_satochip_musig2_session(
     auto sign_data =
         get_satochip_musig2_sign_data(my_pubkey, aggregate_pubkey, participants,
                                       pubnonces, setup->tweaks, hash);
-    cardBip32GetExtendedKeyFn(signing_path);
+    params.cardBip32GetExtendedKeyFn(signing_path);
     const auto session_id = satochip_nonce_id(setup->script_pubkey, my_pubkey,
                                               hash, pubnonces.at(my_pubkey));
     auto secnonce = consumeSecNonceFn(session_id.GetHex());
@@ -811,33 +804,29 @@ static bool process_satochip_musig2_session(
         std::span<const unsigned char>(partial_sig.data(), partial_sig.size())};
     aggregate_musig2_signature(input, aggregate_pubkey, participants, *setup,
                                hash, leaf_hash, sighash_type);
-    operation_done();
     return true;
   }
 
   if (!pubnonces.count(my_pubkey)) {
-    cardBip32GetExtendedKeyFn(signing_path);
+    params.cardBip32GetExtendedKeyFn(signing_path);
     auto nonce_resp = generate_satochip_musig2_nonce(
         params.cardMusig2GenerateNonceFn, aggregate_pubkey, hash);
     const auto session_id =
         satochip_nonce_id(setup->script_pubkey, my_pubkey, hash, nonce_resp[0]);
     saveSecNonceFn(session_id.GetHex(), nonce_resp[1]);
     pubnonces[my_pubkey] = std::move(nonce_resp[0]);
-    operation_done();
   }
 
   return true;
 }
 
 static void sign_satochip_musig2_participant(
-    const SatochipSignPsbtParams &params,
-    const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
-    PartiallySignedTransaction &psbt, const PrecomputedTransactionData &txdata,
-    int index, const XOnlyPubKey &output_key, const CPubKey &my_pubkey,
+    const SatochipSignPsbtParams &params, PartiallySignedTransaction &psbt,
+    const PrecomputedTransactionData &txdata, int index,
+    const XOnlyPubKey &output_key, const CPubKey &my_pubkey,
     const std::map<XOnlyPubKey, std::set<uint256>> &script_keys,
     const CardMusig2SaveSecNonceFn &saveSecNonceFn,
-    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn,
-    const std::function<void()> &operation_done) {
+    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn) {
   auto &input = psbt.inputs[index];
   const auto &leaf_hashes =
       input.m_tap_bip32_paths.at(XOnlyPubKey(my_pubkey)).first;
@@ -851,39 +840,35 @@ static void sign_satochip_musig2_participant(
     bool key_path_processed = false;
     if (!input.m_tap_internal_key.IsNull()) {
       key_path_processed = process_satochip_musig2_session(
-          params, cardBip32GetExtendedKeyFn, psbt, txdata, index, output_key,
-          my_pubkey, aggregate_pubkey, input.m_tap_internal_key,
-          &input.m_tap_merkle_root, nullptr, saveSecNonceFn, consumeSecNonceFn,
-          operation_done);
+          params, psbt, txdata, index, output_key, my_pubkey, aggregate_pubkey,
+          input.m_tap_internal_key, &input.m_tap_merkle_root, nullptr,
+          saveSecNonceFn, consumeSecNonceFn);
     }
     if (!key_path_processed) {
       process_satochip_musig2_session(
-          params, cardBip32GetExtendedKeyFn, psbt, txdata, index, output_key,
-          my_pubkey, aggregate_pubkey, output_key, nullptr, nullptr,
-          saveSecNonceFn, consumeSecNonceFn, operation_done);
+          params, psbt, txdata, index, output_key, my_pubkey, aggregate_pubkey,
+          output_key, nullptr, nullptr, saveSecNonceFn, consumeSecNonceFn);
     }
 
     for (const auto &[candidate_xonly, candidate_leaf_hashes] : script_keys) {
       for (const auto &leaf_hash : candidate_leaf_hashes) {
         if (!leaf_hashes.contains(leaf_hash)) continue;
-        process_satochip_musig2_session(
-            params, cardBip32GetExtendedKeyFn, psbt, txdata, index, output_key,
-            my_pubkey, aggregate_pubkey, candidate_xonly, nullptr, &leaf_hash,
-            saveSecNonceFn, consumeSecNonceFn, operation_done);
+        process_satochip_musig2_session(params, psbt, txdata, index, output_key,
+                                        my_pubkey, aggregate_pubkey,
+                                        candidate_xonly, nullptr, &leaf_hash,
+                                        saveSecNonceFn, consumeSecNonceFn);
       }
     }
   }
 }
 
 static void sign_satochip_taproot_input(
-    const SatochipSignPsbtParams &params,
-    const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
-    PartiallySignedTransaction &psbt, const PrecomputedTransactionData &txdata,
-    int index, const CTxOut &utxo, std::span<const unsigned char> my_xfp,
+    const SatochipSignPsbtParams &params, PartiallySignedTransaction &psbt,
+    const PrecomputedTransactionData &txdata, int index, const CTxOut &utxo,
+    std::span<const unsigned char> my_xfp,
     const std::map<std::vector<uint32_t>, CExtPubKey> &xpubs,
     const CardMusig2SaveSecNonceFn &saveSecNonceFn,
-    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn,
-    const std::function<void()> &operation_done) {
+    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn) {
   auto &input = psbt.inputs[index];
   if (!input.m_tap_key_sig.empty()) return;
   const XOnlyPubKey output_key{MakeUCharSpan(utxo.scriptPubKey).subspan(2)};
@@ -902,18 +887,17 @@ static void sign_satochip_taproot_input(
       continue;
 
     const auto signing_path = WriteHDKeypath(key_origin.path, true);
-    const CPubKey my_pubkey =
-        get_satochip_pubkey(key_origin, xpubs, cardBip32GetExtendedKeyFn);
+    const CPubKey my_pubkey = get_satochip_pubkey(
+        key_origin, xpubs, params.cardBip32GetExtendedKeyFn);
     if (XOnlyPubKey(my_pubkey) != xonly_pub) {
       throw std::runtime_error(
           "Transaction signing key does not match the Satochip key.");
     }
 
     if (musig2) {
-      sign_satochip_musig2_participant(params, cardBip32GetExtendedKeyFn, psbt,
-                                       txdata, index, output_key, my_pubkey,
-                                       script_keys, saveSecNonceFn,
-                                       consumeSecNonceFn, operation_done);
+      sign_satochip_musig2_participant(params, psbt, txdata, index, output_key,
+                                       my_pubkey, script_keys, saveSecNonceFn,
+                                       consumeSecNonceFn);
     }
 
     const bool key_path_candidate = leaf_hashes.empty();
@@ -937,10 +921,9 @@ static void sign_satochip_taproot_input(
               "Taproot output does not match the selected Satochip key.");
         }
       }
-      cardBip32GetExtendedKeyFn(signing_path);
-      input.m_tap_key_sig =
-          sign_satochip_schnorr_hash(params, output_key, hash, sighash_type,
-                                     signs_internal_key, operation_done);
+      params.cardBip32GetExtendedKeyFn(signing_path);
+      input.m_tap_key_sig = sign_satochip_schnorr_hash(
+          params, output_key, hash, sighash_type, signs_internal_key);
       return;
     }
 
@@ -952,19 +935,18 @@ static void sign_satochip_taproot_input(
 
       const auto hash =
           get_taproot_sighash(psbt, txdata, index, sighash_type, &leaf_hash);
-      cardBip32GetExtendedKeyFn(signing_path);
+      params.cardBip32GetExtendedKeyFn(signing_path);
       input.m_tap_script_sigs[script_sig_key] = sign_satochip_schnorr_hash(
-          params, xonly_pub, hash, sighash_type, false, operation_done);
+          params, xonly_pub, hash, sighash_type, false);
     }
   }
 }
 
-static void sign_satochip_ecdsa_input(
-    const SatochipSignPsbtParams &params,
-    const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
-    PartiallySignedTransaction &psbt, const PrecomputedTransactionData &txdata,
-    int index, const CTxOut &utxo, std::span<const unsigned char> my_xfp,
-    const std::function<void()> &operation_done) {
+static void sign_satochip_ecdsa_input(const SatochipSignPsbtParams &params,
+                                      PartiallySignedTransaction &psbt,
+                                      const PrecomputedTransactionData &txdata,
+                                      int index, const CTxOut &utxo,
+                                      std::span<const unsigned char> my_xfp) {
   auto &input = psbt.inputs[index];
   int sighashType = input.sighash_type.value_or(SIGHASH_ALL);
   if (sighashType == SIGHASH_DEFAULT) sighashType = SIGHASH_ALL;
@@ -976,9 +958,9 @@ static void sign_satochip_ecdsa_input(
     if (!script_has_key(scriptCode, {pubkey.begin(), pubkey.size()})) continue;
     auto hash = SignatureHash(scriptCode, *psbt.tx, index, sighashType,
                               utxo.nValue, sigversion, &txdata);
-    cardBip32GetExtendedKeyFn(WriteHDKeypath(key_origin.path, true));
-    auto signature = params.cardSignTransactionHashFn(
-        0xff, {hash.begin(), hash.end()}, params.chalresponse);
+    params.cardBip32GetExtendedKeyFn(WriteHDKeypath(key_origin.path, true));
+    auto signature =
+        params.cardSignTransactionHashFn(0xff, {hash.begin(), hash.end()});
     auto norm_signature = normalize_ecdsa_signature(signature, sighashType);
     if (!pubkey.Verify(hash, signature)) {
       throw NunchukException(
@@ -987,8 +969,16 @@ static void sign_satochip_ecdsa_input(
     }
     input.partial_sigs[pubkey.GetID()] =
         SigPair{pubkey, std::move(norm_signature)};
-    operation_done();
   }
+}
+
+template <typename Callback, typename Progress>
+static auto track_card_operation(const Callback &callback, Progress &progress) {
+  return [&callback, &progress](const auto &...args) {
+    auto result = callback(args...);
+    progress();
+    return result;
+  };
 }
 
 std::string SatochipSignPsbt(
@@ -996,7 +986,7 @@ std::string SatochipSignPsbt(
     const std::string &base64_psbt,
     const CardMusig2SaveSecNonceFn &saveSecNonceFn,
     const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn,
-    const std::vector<SingleSigner> &signers) {
+    const Wallet &wallet) {
   if (!params.cardBip32GetExtendedKeyFn || !params.cardSignTransactionHashFn ||
       !params.cardTaprootTweakPrivateKeyFn || !params.cardSignSchnorrHashFn ||
       !params.cardMusig2GenerateNonceFn || !params.cardMusig2SignFn ||
@@ -1012,67 +1002,72 @@ std::string SatochipSignPsbt(
   auto psbt = DecodePsbt(base64_psbt);
   const PrecomputedTransactionData txdata = PrecomputePSBTData(psbt);
 
-  size_t current_input = 0;
-  size_t estimated_operations = 2;
-  size_t completed_operations = 0;
-  int last_progress = 0;
-  auto report_progress = [&](double completed_inputs) {
-    if (!params.progress) return;
-    int percent = std::min(
-        99, static_cast<int>(completed_inputs * 100 / psbt.tx->vin.size()));
-    if (percent > last_progress) {
-      last_progress = percent;
+  const size_t estimated_operations = std::accumulate(
+      psbt.inputs.begin(), psbt.inputs.end(), size_t{0},
+      [](size_t total, const PSBTInput &input) {
+        if (!input.final_script_sig.empty() ||
+            !input.final_script_witness.IsNull() ||
+            !input.m_tap_key_sig.empty())
+          return total;
+        if (input.m_tap_bip32_paths.empty()) return total + 2;
+        const size_t spending_paths = 1 + input.m_tap_scripts.size();
+        const size_t operations_per_path =
+            input.m_musig2_participants.empty() ? 2 : 1;
+        return total + 1 + spending_paths * operations_per_path;
+      });
+  auto report_progress = [&, completed = size_t{0},
+                          last_percent = 0]() mutable {
+    if (!params.progress || estimated_operations == 0) return;
+    int percent =
+        std::min<size_t>(99, ++completed * 100 / estimated_operations);
+    if (percent > last_percent) {
+      last_percent = percent;
       params.progress(percent);
     }
   };
-  auto operation_done = [&]() {
-    ++completed_operations;
-    report_progress(current_input +
-                    static_cast<double>(
-                        std::min(completed_operations, estimated_operations)) /
-                        estimated_operations);
-  };
 
-  CardBip32GetExtendedKeyFn cardBip32GetExtendedKeyFn =
-      [&, cur_path = std::string(),
-       ret = std::vector<std::vector<unsigned char>>()](
-          const std::string &path) mutable {
-        if (cur_path == path) {
-          return ret;
-        }
-        cur_path = path;
-        ret = params.cardBip32GetExtendedKeyFn(path);
-        operation_done();
-        return ret;
-      };
+  SatochipSignPsbtParams signing_params{
+      .cardBip32GetExtendedKeyFn =
+          [&, cur_path = std::string(),
+           ret = std::vector<std::vector<unsigned char>>()](
+              const std::string &path) mutable {
+            if (cur_path == path) return ret;
+            cur_path = path;
+            ret = params.cardBip32GetExtendedKeyFn(path);
+            report_progress();
+            return ret;
+          },
+      .cardSignTransactionHashFn = track_card_operation(
+          params.cardSignTransactionHashFn, report_progress),
+      .cardTaprootTweakPrivateKeyFn = track_card_operation(
+          params.cardTaprootTweakPrivateKeyFn, report_progress),
+      .cardSignSchnorrHashFn =
+          track_card_operation(params.cardSignSchnorrHashFn, report_progress),
+      .cardMusig2GenerateNonceFn = track_card_operation(
+          params.cardMusig2GenerateNonceFn, report_progress),
+      .cardMusig2SignFn =
+          track_card_operation(params.cardMusig2SignFn, report_progress),
+      .progress = {}};
 
-  auto xpubs = get_signer_xpubs(signers, xfp);
+  auto xpubs = get_signer_xpubs(wallet.get_signers(), xfp);
 
   for (size_t i = 0; i < psbt.tx->vin.size(); ++i) {
-    current_input = i;
-    completed_operations = 0;
-    estimated_operations = 2;
     PSBTInput &input = psbt.inputs[i];
     if (!input.final_script_sig.empty() ||
         !input.final_script_witness.IsNull()) {
-      report_progress(i + 1);
       continue;
     }
-    CTxOut utxo;
-    if (psbt.GetInputUTXO(utxo, i) && !utxo.IsNull()) {
+
+    if (CTxOut utxo; psbt.GetInputUTXO(utxo, i) && !utxo.IsNull()) {
       if (utxo.scriptPubKey.IsPayToTaproot()) {
-        estimated_operations =
-            1 + (1 + input.m_tap_scripts.size()) *
-                    (input.m_musig2_participants.empty() ? 2 : 1);
-        sign_satochip_taproot_input(
-            params, cardBip32GetExtendedKeyFn, psbt, txdata, i, utxo, my_xfp,
-            xpubs, saveSecNonceFn, consumeSecNonceFn, operation_done);
+        sign_satochip_taproot_input(signing_params, psbt, txdata, i, utxo,
+                                    my_xfp, xpubs, saveSecNonceFn,
+                                    consumeSecNonceFn);
       } else {
-        sign_satochip_ecdsa_input(params, cardBip32GetExtendedKeyFn, psbt,
-                                  txdata, i, utxo, my_xfp, operation_done);
+        sign_satochip_ecdsa_input(signing_params, psbt, txdata, i, utxo,
+                                  my_xfp);
       }
     }
-    report_progress(i + 1);
   }
 
   auto result = EncodePsbt(psbt);

@@ -26,6 +26,7 @@
 namespace nunchuk {
 
 class SingleSigner;
+class Wallet;
 
 // Consume synchronously, clear copies, and throw on card errors.
 using CardBip32ImportSeedFn =
@@ -42,10 +43,10 @@ using CardBip32GetExtendedKeyFn =
     std::function<std::vector<std::vector<unsigned char>>(
         const std::string &path)>;
 
-// Returns DER or throws; 2FA uses HMAC-SHA1 over hash || 32 bytes of 0xCC.
+// Signing does not support 2FA; callers must reject 2FA-enabled cards.
+// Returns DER or throws; pass no 2FA response to the card library.
 using CardSignTransactionHashFn = std::function<std::vector<unsigned char>(
-    unsigned char keynbr, const std::vector<unsigned char> &txhash,
-    const std::optional<std::vector<unsigned char>> &chalresponse)>;
+    unsigned char keynbr, const std::vector<unsigned char> &txhash)>;
 
 // `tweak` is the raw 32-byte APDU parameter, not a TapTweak scalar or Merkle
 // root. Returns a 33/65-byte pubkey. Bypass requires the applet's Nostr
@@ -53,9 +54,9 @@ using CardSignTransactionHashFn = std::function<std::vector<unsigned char>(
 using CardTaprootTweakPrivateKeyFn = std::function<std::vector<unsigned char>(
     int keynbr, const std::vector<unsigned char> &tweak, bool bypass_flag)>;
 
+// Returns 64 bytes or throws; pass no 2FA response to the card library.
 using CardSignSchnorrHashFn = std::function<std::vector<unsigned char>(
-    const std::vector<unsigned char> &txhash,
-    const std::optional<std::vector<unsigned char>> &chalresponse)>;
+    const std::vector<unsigned char> &txhash)>;
 
 using CardMusig2GenerateNonceFn =
     std::function<std::vector<std::vector<unsigned char>>(
@@ -89,8 +90,6 @@ struct SatochipSignPsbtParams {
   CardSignSchnorrHashFn cardSignSchnorrHashFn;
   CardMusig2GenerateNonceFn cardMusig2GenerateNonceFn;
   CardMusig2SignFn cardMusig2SignFn;
-  // With 2FA, callbacks must obtain a response for each hash and algorithm.
-  std::optional<std::vector<unsigned char>> chalresponse;
   // Optional notification: estimated progress (0-100) for this signing pass.
   std::function<void(int)> progress;
 };
@@ -102,14 +101,12 @@ std::string SatochipGetMasterFingerprint(
 std::string SatochipSignMessage(
     const CardBip32GetExtendedKeyFn &cardBip32GetExtendedKeyFn,
     const CardSignTransactionHashFn &cardSignTransactionHashFn,
-    const SingleSigner &signer, const std::string &message,
-    const std::optional<std::vector<unsigned char>> &chalresponse);
+    const SingleSigner &signer, const std::string &message);
 
 std::string SatochipSignPsbt(
     const SatochipSignPsbtParams &params, const std::string &xfp,
     const std::string &psbt, const CardMusig2SaveSecNonceFn &saveSecNonceFn,
-    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn,
-    const std::vector<SingleSigner> &signers);
+    const CardMusig2ConsumeSecNonceFn &consumeSecNonceFn, const Wallet &wallet);
 
 }  // namespace nunchuk
 

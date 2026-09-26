@@ -819,9 +819,7 @@ class NunchukImpl : public Nunchuk {
   std::string SignSatochipMessage(
       const CardBip32GetExtendedKeyFn& cardBip32GetExtendedKeyFn,
       const CardSignTransactionHashFn& cardSignTransactionHashFn,
-      const SingleSigner& signer, const std::string& message,
-      const std::optional<std::vector<unsigned char>>& chalresponse =
-          std::nullopt) override;
+      const SingleSigner& signer, const std::string& message) override;
   std::string SignSatochipTransaction(const SatochipSignPsbtParams& params,
                                       const Wallet& wallet,
                                       const std::string& psbt) override;

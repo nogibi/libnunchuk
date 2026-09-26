@@ -3686,11 +3686,9 @@ SingleSigner NunchukImpl::GetSignerFromSatochipMasterSigner(
 std::string NunchukImpl::SignSatochipMessage(
     const CardBip32GetExtendedKeyFn& cardBip32GetExtendedKeyFn,
     const CardSignTransactionHashFn& cardSignTransactionHashFn,
-    const SingleSigner& signer, const std::string& message,
-    const std::optional<std::vector<unsigned char>>& chalresponse) {
+    const SingleSigner& signer, const std::string& message) {
   return SatochipSignMessage(cardBip32GetExtendedKeyFn,
-                             cardSignTransactionHashFn, signer, message,
-                             chalresponse);
+                             cardSignTransactionHashFn, signer, message);
 }
 
 std::string NunchukImpl::SignSatochipTransaction(
@@ -3725,7 +3723,7 @@ std::string NunchukImpl::SignSatochipTransaction(
     }
   };
   return SatochipSignPsbt(params, master_fingerprint, psbt, save_sec_nonce,
-                          consume_sec_nonce, wallet.get_signers());
+                          consume_sec_nonce, wallet);
 }
 
 Transaction NunchukImpl::SignSatochipTransaction(
