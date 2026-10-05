@@ -230,8 +230,11 @@ add_library("${PROJECT_NAME}" STATIC
     src/utils/enumconverter.hpp
     src/utils/rfc2440.hpp
     src/utils/coldcard.cpp
+    src/utils/krux.cpp
     src/utils/trezor.hpp
     src/utils/trezor.cpp
+    src/utils/satochip.hpp
+    src/utils/satochip.cpp
     src/utils/bip85.cpp
     src/utils/secretbox.cpp
     src/certs/sslcerts.cpp
@@ -251,6 +254,17 @@ add_library("${PROJECT_NAME}" STATIC
     src/utils/ledger/ledger_session.hpp
     src/utils/ledger/ledger_manager.hpp
     src/utils/ledger/psbt.hpp
+    src/utils/jade/bitcoin.cpp
+    src/utils/jade/http_client.cpp
+    src/utils/jade/jade.cpp
+    src/utils/jade/jade_manager.cpp
+    src/utils/jade/jade_session.cpp
+    src/utils/jade/bitcoin.hpp
+    src/utils/jade/http_client.hpp
+    src/utils/jade/jade.hpp
+    src/utils/jade/jade_manager.hpp
+    src/utils/jade/jade_session.hpp
+    src/utils/jade/types.hpp
     src/utils/bitbox/nanopb/pb_common.c
     src/utils/bitbox/nanopb/pb_decode.c
     src/utils/bitbox/nanopb/pb_encode.c
@@ -334,6 +348,7 @@ if(ANDROID)
 else()
     target_link_libraries("${PROJECT_NAME}" PUBLIC embedded ${PROJECT_LIBRARIES} trezor-crypto tap-protocol bbqr-cpp libwally)
 endif()
+target_link_libraries("${PROJECT_NAME}" PRIVATE zlibstatic)
 
 target_include_directories("${PROJECT_NAME}" PUBLIC 
     "${PROJECT_SOURCE_DIR}/src"
