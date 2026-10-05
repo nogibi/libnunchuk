@@ -53,23 +53,20 @@ struct FirmwareRelease {
 };
 
 // Keep this metadata in sync with BitBoxApp's bundledFirmwares table in
-// backend/devices/bitbox02bootloader/firmware.go. Firmware binaries remain
-// client-supplied; only the required upgrade order is mirrored here.
-constexpr std::array<FirmwareRelease, 14> FIRMWARE_RELEASES{{
+// backend/devices/bitbox02bootloader/firmware.go (07858e22, firmware 9.27.1).
+// Firmware binaries remain client-supplied; only required intermediate
+// upgrades and the latest release belong here, not every past release.
+constexpr std::array<FirmwareRelease, 10> FIRMWARE_RELEASES{{
     {BitBoxProduct::BITBOX02_MULTI, 9, 17, 1, 36},
     {BitBoxProduct::BITBOX02_MULTI, 9, 26, 2, 50},
-    {BitBoxProduct::BITBOX02_MULTI, 9, 26, 4, 52},
-    {BitBoxProduct::BITBOX02_MULTI, 9, 27, 0, 54},
+    {BitBoxProduct::BITBOX02_MULTI, 9, 27, 1, 55},
     {BitBoxProduct::BITBOX02_BITCOIN_ONLY, 9, 17, 1, 36},
     {BitBoxProduct::BITBOX02_BITCOIN_ONLY, 9, 26, 2, 50},
-    {BitBoxProduct::BITBOX02_BITCOIN_ONLY, 9, 26, 3, 51},
-    {BitBoxProduct::BITBOX02_BITCOIN_ONLY, 9, 27, 0, 54},
+    {BitBoxProduct::BITBOX02_BITCOIN_ONLY, 9, 27, 1, 55},
     {BitBoxProduct::NOVA_MULTI, 9, 26, 2, 50},
-    {BitBoxProduct::NOVA_MULTI, 9, 26, 4, 52},
-    {BitBoxProduct::NOVA_MULTI, 9, 27, 0, 54},
+    {BitBoxProduct::NOVA_MULTI, 9, 27, 1, 55},
     {BitBoxProduct::NOVA_BITCOIN_ONLY, 9, 26, 2, 50},
-    {BitBoxProduct::NOVA_BITCOIN_ONLY, 9, 26, 3, 51},
-    {BitBoxProduct::NOVA_BITCOIN_ONLY, 9, 27, 0, 54},
+    {BitBoxProduct::NOVA_BITCOIN_ONLY, 9, 27, 1, 55},
 }};
 
 const FirmwareRelease* NextFirmwareRelease(
