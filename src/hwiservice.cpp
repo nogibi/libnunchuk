@@ -20,13 +20,22 @@
 #include <base58.h>
 
 #include <boost/algorithm/string/trim.hpp>
+#if __has_include(<boost/process/v1.hpp>)
+#include <boost/process/v1.hpp>
+#ifdef _WIN32
+#include <boost/process/v1/windows.hpp>
+#endif
+namespace bp = boost::process::v1;
+#else
 #include <boost/process.hpp>
-#include <charconv>
-#include <regex>
-#include "utils/quote.hpp"
 #ifdef _WIN32
 #include <boost/process/windows.hpp>
 #endif
+namespace bp = boost::process;
+#endif
+#include <charconv>
+#include <regex>
+#include "utils/quote.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <iomanip>
@@ -40,7 +49,6 @@
 #include <utils/errorutils.hpp>
 
 using json = nlohmann::json;
-namespace bp = boost::process;
 
 namespace nunchuk {
 
@@ -230,7 +238,8 @@ std::vector<Device> HWIService::Enumerate() const {
   for (auto &el : enumerate.items()) {
     if (el.value()["error"] != nullptr &&
         el.value()["code"] != -18 &&  // device not initialized
-        el.value()["code"] != -12     // device not ready
+        el.value()["code"] != -12 &&  // device not ready
+        el.value()["code"] != -20     // pairing required
     ) {
       continue;
     }
@@ -242,6 +251,8 @@ std::vector<Device> HWIService::Enumerate() const {
                   el.value()["needs_passphrase_sent"],
                   el.value()["needs_pin_sent"],
                   el.value()["code"] != -18};
+    device.set_needs_pairing(el.value()["code"] == -20 ||
+                            el.value().value("needs_pairing", false));
     rs.push_back(device);
   }
   return rs;

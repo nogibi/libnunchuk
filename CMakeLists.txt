@@ -162,6 +162,7 @@ target_include_directories(ur-2 PUBLIC
 
 add_library("${PROJECT_NAME}" STATIC 
     src/hwiservice.cpp 
+    src/hwipairing.cpp
     src/groupservice.cpp
     src/selector.cpp 
     src/spender.cpp
