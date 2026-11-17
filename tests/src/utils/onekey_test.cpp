@@ -609,16 +609,16 @@ Bytes V2SessionResponse(unsigned value = 1) {
   return Join({Blob(1, Bytes(16, value)), String(2, "synthetic-wallet-identity"),
                Number(3, 1)});
 }
-void BeginInitializeV2(OneKeySession& session, V2Peer& peer) {
+void BeginInitializeV2(OneKeySession& session, V2Peer& peer, uint32_t model = 7) {
   CHECK(V2Request(session.initialize()).type == proto::V2_PING);
   CHECK(V2Request(peer.reply(session, proto::V2_SUCCESS,
                             String(1, "protocol-v2-probe"))).type == proto::V2_DEVICE_INFO_GET);
-  const auto info = Join({Number(1, 1), Blob(100, Number(10, 7)),
+  const auto info = Join({Number(1, 1), Blob(100, Number(10, model)),
                          Blob(200, Blob(30, String(10, "1.0.1")))});
   CHECK(V2Request(peer.reply(session, proto::V2_DEVICE_INFO, info)).type == proto::V2_PROTOCOL_INFO_REQUEST);
 }
-void InitializeV2(OneKeySession& session, V2Peer& peer) {
-  BeginInitializeV2(session, peer);
+void InitializeV2(OneKeySession& session, V2Peer& peer, uint32_t model = 7) {
+  BeginInitializeV2(session, peer, model);
   auto protocol = Join({Number(1, 1), String(2, "synthetic-build")});
   for (uint16_t type : {proto::GET_PUBLIC_KEY, proto::V2_DEVICE_STATUS_GET,
                        proto::V2_SESSION_GET, proto::V2_SESSION_ASK_PIN,
@@ -629,10 +629,68 @@ void InitializeV2(OneKeySession& session, V2Peer& peer) {
   CHECK(V2Request(peer.reply(session, proto::V2_PROTOCOL_INFO, protocol)).type == proto::V2_DEVICE_STATUS_GET);
   REQUIRE(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status()).type == OneKeyStepType::COMPLETE);
   REQUIRE(session.initialized());
-  CHECK(session.deviceInfo().model == OneKeyModel::PRO2);
+  CHECK(session.deviceInfo().model == (model == 8 ? OneKeyModel::NEO : OneKeyModel::PRO2));
   CHECK(session.deviceInfo().firmware_version == "1.0.1");
 }
 }  // namespace
+
+TEST_CASE("OneKey Neo uses the V2 wallet session flow and unknown models stay unsupported") {
+  CoreUtils::getInstance().SetChain(Chain::MAIN);
+  OneKeySession session(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+  V2Peer peer;
+  InitializeV2(session, peer, 8);
+  CHECK(session.deviceInfo().model == OneKeyModel::NEO);
+  CHECK(V2Request(session.getMasterFingerprint()).type == proto::V2_DEVICE_STATUS_GET);
+  CHECK(V2Request(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status())).type == proto::V2_SESSION_GET);
+  CHECK(V2Request(peer.reply(session, proto::V2_SESSION, V2SessionResponse())).type == proto::GET_PUBLIC_KEY);
+  const auto signer = TestSigner(1);
+  REQUIRE(peer.reply(session, proto::PUBLIC_KEY, PublicKeyResponse(signer, "m/0h")).type == OneKeyStepType::COMPLETE);
+  CHECK(session.result<GetMasterFingerprintResult>().master_fingerprint == signer.GetMasterFingerprint());
+
+  OneKeySession unknown(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+  V2Peer unknown_peer;
+  unknown.initialize();
+  unknown_peer.reply(unknown, proto::V2_SUCCESS, String(1, "protocol-v2-probe"));
+  const auto unsupported = unknown_peer.reply(unknown, proto::V2_DEVICE_INFO,
+      Join({Number(1, 1), Blob(100, Number(10, 99)),
+            Blob(200, Blob(30, String(10, "1.0.1")))}));
+  REQUIRE(unsupported.type == OneKeyStepType::FAILED);
+  REQUIRE(unsupported.error.has_value());
+  CHECK(unsupported.error->code == OneKeyErrorCode::UNSUPPORTED_DEVICE);
+  CHECK_FALSE(unknown.initialized());
+}
+
+TEST_CASE("OneKey V2 reports USB priority without retrying the disabled BLE link") {
+  CoreUtils::getInstance().SetChain(Chain::MAIN);
+  for (bool during_probe : {true, false}) {
+    for (int code : {5, 6}) {
+      for (auto type : {proto::V2_FAILURE, proto::FAILURE}) {
+        OneKeySession session(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+        V2Peer peer;
+        if (during_probe) session.initialize();
+        else InitializeV2(session, peer, 8);
+        if (!during_probe) session.getMasterFingerprint();
+        const auto response = type == proto::V2_FAILURE
+            ? Join({Number(1, code), Number(2, 7), String(3, " Link Disabled \n")})
+            : Join({Number(1, code), String(2, " Link Disabled \n")});
+        const auto failure = peer.reply(session, type, response);
+        REQUIRE(failure.type == OneKeyStepType::FAILED);
+        REQUIRE(failure.error.has_value());
+        CHECK(failure.writes.empty());
+        const auto expected = type == proto::FAILURE && code == 6
+            ? OneKeyErrorCode::USER_CANCELLED : OneKeyErrorCode::DEVICE;
+        CHECK(failure.error->code == expected);
+        CHECK(failure.error->device_code == (type == proto::V2_FAILURE ? 7 : code));
+        if (code == 5) {
+          CHECK(failure.error->message == "Bluetooth is unavailable while USB is connected. Unplug USB");
+        } else {
+          CHECK(failure.error->message == " Link Disabled \n");
+        }
+        CHECK_THROWS(session.getMasterFingerprint());
+      }
+    }
+  }
+}
 
 TEST_CASE("OneKey ProtocolInfo distinguishes legacy and current wire layouts") {
   const auto legacy = proto::Decode(proto::V2_PROTOCOL_INFO, Number(1, 1));
