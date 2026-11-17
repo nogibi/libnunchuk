@@ -576,3 +576,173 @@ TEST_CASE("OneKey session is bound to its Bitcoin network") {
   CHECK(CoinName(Chain::SIGNET) == "Testnet");
   CHECK(CoinName(Chain::REGTEST) == "Regtest");
 }
+
+namespace {
+struct V2Peer {
+  V2Framer framer{OneKeyTransport::BLE};
+  OneKeyStep reply(OneKeySession& session, uint16_t type, const Bytes& payload) {
+    OneKeyStep step;
+    for (const auto& packet : framer.encode(type, payload)) {
+      // Exercise notifications that split headers and protobuf fields.
+      for (size_t offset = 0; offset < packet.size(); offset += 7) {
+        step = session.onData(std::span(packet).subspan(
+            offset, std::min(size_t{7}, packet.size() - offset)));
+        if (step.type == OneKeyStepType::FAILED) return step;
+      }
+    }
+    return step;
+  }
+};
+WireMessage V2Request(const OneKeyStep& step) {
+  REQUIRE(step.type == OneKeyStepType::WRITE);
+  V2Framer parser(OneKeyTransport::BLE);
+  std::optional<WireMessage> message;
+  for (const auto& packet : step.writes) message = parser.receive(packet);
+  REQUIRE(message.has_value());
+  return *message;
+}
+Bytes V2Status(bool unlocked = true, bool passphrase = false, bool attached_pin = false) {
+  return Join({String(1, "test-device"), Number(2, unlocked), Number(3, 1),
+               Number(10, passphrase), Number(11, passphrase), Number(12, attached_pin)});
+}
+Bytes V2SessionResponse(unsigned value = 1) {
+  return Join({Blob(1, Bytes(16, value)), String(2, "synthetic-wallet-identity"),
+               Number(3, 1)});
+}
+void InitializeV2(OneKeySession& session, V2Peer& peer) {
+  CHECK(V2Request(session.initialize()).type == proto::V2_PING);
+  CHECK(V2Request(peer.reply(session, proto::V2_SUCCESS,
+                            String(1, "protocol-v2-probe"))).type == proto::V2_DEVICE_INFO_GET);
+  const auto info = Join({Number(1, 1), Blob(100, Number(10, 7)),
+                         Blob(200, Blob(30, String(10, "1.0.1")))});
+  CHECK(V2Request(peer.reply(session, proto::V2_DEVICE_INFO, info)).type == proto::V2_PROTOCOL_INFO_REQUEST);
+  auto protocol = Join({Number(1, 1), String(2, "synthetic-build")});
+  for (uint16_t type : {proto::GET_PUBLIC_KEY, proto::V2_DEVICE_STATUS_GET,
+                       proto::V2_SESSION_GET, proto::V2_SESSION_ASK_PIN,
+                       proto::V2_SESSION_ASK_PASSPHRASE, proto::SIGN_PSBT}) {
+    const auto field = Number(3, type);
+    protocol.insert(protocol.end(), field.begin(), field.end());
+  }
+  CHECK(V2Request(peer.reply(session, proto::V2_PROTOCOL_INFO, protocol)).type == proto::V2_DEVICE_STATUS_GET);
+  REQUIRE(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status()).type == OneKeyStepType::COMPLETE);
+  REQUIRE(session.initialized());
+  CHECK(session.deviceInfo().model == OneKeyModel::PRO2);
+  CHECK(session.deviceInfo().firmware_version == "1.0.1");
+}
+}  // namespace
+
+TEST_CASE("OneKey Protocol V2 framing matches SDK vectors and rejects corrupt frames") {
+  // Golden vectors from the local hardware-js-sdk CRC table and frame layout.
+  const auto ping = ParseHex("5a1d00aa0100012eeb0a1170726f746f636f6c2d76322d70726f6265d6");
+  const auto ack = ParseHex("5a0800b901010131");
+  const auto response = ParseHex("5a1d00aa0100092feb0a1170726f746f636f6c2d76322d70726f6265e0");
+  V2Framer framer(OneKeyTransport::BLE);
+  REQUIRE(framer.encode(proto::V2_PING, String(1, "protocol-v2-probe")) == std::vector<Bytes>{ping});
+  CHECK_FALSE(framer.receive(std::span(ack).first(3)).has_value());
+  const auto rest = Join({Bytes(ack.begin() + 3, ack.end()), response});
+  const auto received = framer.receive(rest);
+  REQUIRE(received.has_value());
+  CHECK(received->type == proto::V2_SUCCESS);
+  CHECK(received->data == String(1, "protocol-v2-probe"));
+  CHECK_THROWS(framer.receive(response));
+  auto broken = response;
+  broken.back() ^= 1;
+  V2Framer corrupt(OneKeyTransport::BLE);
+  CHECK_THROWS(corrupt.receive(broken));
+  V2Framer wrong_route(OneKeyTransport::USB);
+  CHECK_THROWS(wrong_route.receive(response));
+  V2Framer wrong_ack(OneKeyTransport::BLE);
+  wrong_ack.encode(proto::V2_PING, {});
+  wrong_ack.encode(proto::V2_PING, {});
+  CHECK_THROWS(wrong_ack.receive(ack));
+  CHECK_THROWS(framer.encode(proto::SIGN_PSBT, Bytes(V2Framer::MAX_FRAME_SIZE)));
+
+  auto sequence = std::make_shared<uint8_t>(254);
+  V2Framer before_reconnect(OneKeyTransport::BLE, sequence);
+  CHECK(before_reconnect.encode(proto::V2_PING, {})[0][6] == 255);
+  V2Framer after_reconnect(OneKeyTransport::BLE, sequence);
+  CHECK(after_reconnect.encode(proto::V2_PING, {})[0][6] == 1);
+  CHECK(after_reconnect.encode(proto::V2_PING, {})[0][6] == 2);
+}
+
+TEST_CASE("OneKey Pro 2 unlocks on device and binds subsequent commands to the same wallet") {
+  CoreUtils::getInstance().SetChain(Chain::MAIN);
+  OneKeySession session(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+  V2Peer peer;
+  InitializeV2(session, peer);
+  CHECK(V2Request(session.getMasterFingerprint()).type == proto::V2_DEVICE_STATUS_GET);
+  const auto unlock = peer.reply(session, proto::V2_DEVICE_STATUS, V2Status(false));
+  CHECK(unlock.interaction == UserInteraction::UNLOCK_DEVICE);
+  CHECK(V2Request(unlock).type == proto::V2_SESSION_ASK_PIN);
+  CHECK(V2Request(unlock).data == Number(1, 2));
+  CHECK(V2Request(peer.reply(session, proto::V2_SUCCESS, {})).type == proto::V2_DEVICE_STATUS_GET);
+  CHECK(V2Request(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status())).type == proto::V2_SESSION_GET);
+  CHECK(V2Request(peer.reply(session, proto::V2_SESSION, V2SessionResponse())).type == proto::GET_PUBLIC_KEY);
+  const auto signer = TestSigner(1);
+  REQUIRE(peer.reply(session, proto::PUBLIC_KEY, PublicKeyResponse(signer, "m/0h")).type == OneKeyStepType::COMPLETE);
+  CHECK(session.result<GetMasterFingerprintResult>().master_fingerprint == signer.GetMasterFingerprint());
+  CHECK(V2Request(session.getExtendedPublicKey("m/84h/0h/0h")).type == proto::V2_DEVICE_STATUS_GET);
+  const auto resume = V2Request(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status()));
+  CHECK(resume.type == proto::V2_SESSION_GET);
+  CHECK(resume.data == Join({Blob(1, Bytes(16, 1)), String(2, "synthetic-wallet-identity")}));
+  const auto changed = peer.reply(session, proto::V2_SESSION, V2SessionResponse(2));
+  CHECK(changed.type == OneKeyStepType::FAILED);
+  REQUIRE(changed.error.has_value());
+  CHECK(changed.error->code == OneKeyErrorCode::SESSION_LOST);
+  CHECK_THROWS(session.getMasterFingerprint());
+}
+
+TEST_CASE("OneKey Pro 2 passphrase selection is explicit and V2 failures decode correctly") {
+  CoreUtils::getInstance().SetChain(Chain::MAIN);
+  OneKeySession session(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+  V2Peer peer;
+  InitializeV2(session, peer);
+  session.getMasterFingerprint();
+  CHECK(V2Request(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status(true, true, true))).type == proto::V2_SESSION_ASK_PIN);
+  CHECK(V2Request(peer.reply(session, proto::V2_SUCCESS, {})).type == proto::V2_DEVICE_STATUS_GET);
+  const auto prompt = peer.reply(session, proto::V2_DEVICE_STATUS, V2Status(true, true));
+  REQUIRE(prompt.type == OneKeyStepType::AWAITING_USER);
+  CHECK(prompt.on_device_available);
+  CHECK(prompt.attach_pin_available);
+  const auto select = V2Request(session.providePassphrase(""));
+  CHECK(select.type == proto::V2_SESSION_ASK_PASSPHRASE);
+  CHECK(select.data == Join({String(1, ""), Number(2, 0), Number(3, 1)}));
+  CHECK(V2Request(peer.reply(session, proto::V2_SUCCESS, {})).type == proto::V2_SESSION_GET);
+  CHECK(V2Request(peer.reply(session, proto::V2_SESSION, V2SessionResponse())).type == proto::GET_PUBLIC_KEY);
+  const auto failure = peer.reply(session, proto::V2_FAILURE,
+      Join({Number(1, 5), Number(2, 7), String(3, "synthetic device error")}));
+  CHECK(failure.type == OneKeyStepType::FAILED);
+  REQUIRE(failure.error.has_value());
+  CHECK(failure.error->message == "synthetic device error");
+  CHECK(failure.error->device_code == 7);
+}
+
+TEST_CASE("OneKey Pro 2 preserves Bitcoin signature verification over V2 transport") {
+  CoreUtils::getInstance().SetChain(Chain::MAIN);
+  const auto wallet = TestWallet(AddressType::TAPROOT);
+  const auto signer = TestSigner(1);
+  const auto psbt = TestPsbt(wallet);
+  const auto prepared = PreparePsbt(wallet, psbt, signer.GetMasterFingerprint(), Chain::MAIN);
+  for (bool valid : {false, true}) {
+    OneKeySession session(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+    V2Peer peer;
+    InitializeV2(session, peer);
+    CHECK(V2Request(session.signPsbt(wallet, psbt)).type == proto::V2_DEVICE_STATUS_GET);
+    peer.reply(session, proto::V2_DEVICE_STATUS, V2Status());
+    peer.reply(session, proto::V2_SESSION, V2SessionResponse());
+    peer.reply(session, proto::PUBLIC_KEY, PublicKeyResponse(signer, "m/0h"));
+    const auto request = peer.reply(session, proto::PUBLIC_KEY,
+        PublicKeyResponse(signer, wallet.get_signers()[0].get_derivation_path()));
+    CHECK(V2Request(request).type == proto::SIGN_PSBT);
+    const auto signed_psbt = Sign(wallet, prepared.signing_psbt, 1,
+        valid ? std::optional<int>{} : std::optional<int>{SIGHASH_NONE});
+    const auto result = peer.reply(session, proto::SIGNED_PSBT, Blob(1, *DecodeBase64(signed_psbt)));
+    if (valid) {
+      REQUIRE(result.type == OneKeyStepType::COMPLETE);
+      CHECK_FALSE(DecodePsbt(session.result<SignPsbtResult>().psbt).inputs[0].m_tap_key_sig.empty());
+    } else {
+      CHECK(result.type == OneKeyStepType::FAILED);
+      CHECK_THROWS(session.result());
+    }
+  }
+}
