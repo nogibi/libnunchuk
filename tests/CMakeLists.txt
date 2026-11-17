@@ -18,6 +18,7 @@ set(files
     src/utils/addressutils_test.cpp
     src/utils/attachment_test.cpp
     src/utils/bip32_test.cpp
+    src/utils/onekey_test.cpp
     src/utils/silentpayment_test.cpp
     src/utils/silentpayment_kgroup_test.cpp
     src/utils/txutils_test.cpp)
@@ -38,3 +39,6 @@ endforeach()
 target_include_directories(softwaresigner_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/bitcoin/src")
 set_property(TARGET softwaresigner_test PROPERTY CXX_STANDARD 20)
+
+target_include_directories(onekey_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../contrib/bitcoin/src")
