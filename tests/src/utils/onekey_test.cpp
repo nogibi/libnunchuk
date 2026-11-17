@@ -677,12 +677,15 @@ TEST_CASE("OneKey V2 reports USB priority without retrying the disabled BLE link
         REQUIRE(failure.type == OneKeyStepType::FAILED);
         REQUIRE(failure.error.has_value());
         CHECK(failure.writes.empty());
-        const auto expected = type == proto::FAILURE && code == 6
-            ? OneKeyErrorCode::USER_CANCELLED : OneKeyErrorCode::DEVICE;
+        const auto expected = code == 5
+            ? OneKeyErrorCode::BLE_UNAVAILABLE_WHILE_USB_CONNECTED
+            : (type == proto::FAILURE ? OneKeyErrorCode::USER_CANCELLED : OneKeyErrorCode::DEVICE);
         CHECK(failure.error->code == expected);
         CHECK(failure.error->device_code == (type == proto::V2_FAILURE ? 7 : code));
         if (code == 5) {
-          CHECK(failure.error->message == "Bluetooth is unavailable while USB is connected. Unplug USB");
+          CHECK(failure.error->message ==
+              "Your OneKey is connected by USB, which disables Bluetooth. "
+              "Unplug the USB cable from your OneKey, then reconnect using Bluetooth.");
         } else {
           CHECK(failure.error->message == " Link Disabled \n");
         }
@@ -690,6 +693,15 @@ TEST_CASE("OneKey V2 reports USB priority without retrying the disabled BLE link
       }
     }
   }
+
+  OneKeySession legacy(Chain::MAIN, OneKeyTransport::BLE);
+  legacy.initialize();
+  const auto failure = Reply(legacy, proto::FAILURE,
+      Join({Number(1, 5), String(2, "link disabled")}), OneKeyTransport::BLE);
+  REQUIRE(failure.type == OneKeyStepType::FAILED);
+  REQUIRE(failure.error.has_value());
+  CHECK(failure.error->code == OneKeyErrorCode::DEVICE);
+  CHECK(failure.error->message == "link disabled");
 }
 
 TEST_CASE("OneKey ProtocolInfo distinguishes legacy and current wire layouts") {
