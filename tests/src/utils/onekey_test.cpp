@@ -609,13 +609,16 @@ Bytes V2SessionResponse(unsigned value = 1) {
   return Join({Blob(1, Bytes(16, value)), String(2, "synthetic-wallet-identity"),
                Number(3, 1)});
 }
-void InitializeV2(OneKeySession& session, V2Peer& peer) {
+void BeginInitializeV2(OneKeySession& session, V2Peer& peer) {
   CHECK(V2Request(session.initialize()).type == proto::V2_PING);
   CHECK(V2Request(peer.reply(session, proto::V2_SUCCESS,
                             String(1, "protocol-v2-probe"))).type == proto::V2_DEVICE_INFO_GET);
   const auto info = Join({Number(1, 1), Blob(100, Number(10, 7)),
                          Blob(200, Blob(30, String(10, "1.0.1")))});
   CHECK(V2Request(peer.reply(session, proto::V2_DEVICE_INFO, info)).type == proto::V2_PROTOCOL_INFO_REQUEST);
+}
+void InitializeV2(OneKeySession& session, V2Peer& peer) {
+  BeginInitializeV2(session, peer);
   auto protocol = Join({Number(1, 1), String(2, "synthetic-build")});
   for (uint16_t type : {proto::GET_PUBLIC_KEY, proto::V2_DEVICE_STATUS_GET,
                        proto::V2_SESSION_GET, proto::V2_SESSION_ASK_PIN,
@@ -630,6 +633,87 @@ void InitializeV2(OneKeySession& session, V2Peer& peer) {
   CHECK(session.deviceInfo().firmware_version == "1.0.1");
 }
 }  // namespace
+
+TEST_CASE("OneKey ProtocolInfo distinguishes legacy and current wire layouts") {
+  const auto legacy = proto::Decode(proto::V2_PROTOCOL_INFO, Number(1, 1));
+  CHECK(legacy.at("legacy").get<bool>());
+  CHECK(legacy.at("supported_messages").empty());
+  const auto advertised = proto::Decode(proto::V2_PROTOCOL_INFO,
+      Join({Number(1, 1), Number(2, proto::V2_DEVICE_STATUS_GET),
+            String(3, "synthetic schema")}));
+  CHECK(advertised.at("legacy").get<bool>());
+  CHECK(advertised.at("supported_messages").get<std::vector<uint32_t>>() ==
+        std::vector<uint32_t>{proto::V2_DEVICE_STATUS_GET});
+
+  const auto current = proto::Decode(proto::V2_PROTOCOL_INFO,
+      Join({Number(1, 1), String(2, "synthetic-build"),
+            Blob(3, Join({Varint(proto::V2_DEVICE_STATUS_GET), Varint(proto::SIGN_PSBT)}))}));
+  CHECK_FALSE(current.at("legacy").get<bool>());
+  const std::vector<uint32_t> expected{proto::V2_DEVICE_STATUS_GET, proto::SIGN_PSBT};
+  CHECK(current.at("supported_messages").get<std::vector<uint32_t>>() == expected);
+
+  // Invalid current fields must not be reinterpreted as a legacy response.
+  CHECK_THROWS(proto::Decode(proto::V2_PROTOCOL_INFO,
+      Join({Number(1, 1), Number(3, proto::V2_DEVICE_STATUS_GET)})));
+  CHECK_THROWS(proto::Decode(proto::V2_PROTOCOL_INFO,
+      Join({Number(1, 1), Number(2, proto::V2_DEVICE_STATUS_GET), Number(3, 11)})));
+  CHECK_THROWS(proto::Decode(proto::V2_PROTOCOL_INFO,
+      Join({Number(1, 1), Bytes{0x1a, 0x02, 0x61}})));
+  CHECK_THROWS(proto::Decode(proto::V2_PROTOCOL_INFO, Number(2, proto::V2_DEVICE_STATUS_GET)));
+  auto oversized = Number(1, 1);
+  for (size_t i = 0; i < 1025; ++i) {
+    const auto field = Number(2, proto::V2_DEVICE_STATUS_GET);
+    oversized.insert(oversized.end(), field.begin(), field.end());
+  }
+  CHECK_THROWS(proto::Decode(proto::V2_PROTOCOL_INFO, oversized));
+}
+
+TEST_CASE("OneKey Pro 2 accepts legacy and partial capability lists after checking status") {
+  CoreUtils::getInstance().SetChain(Chain::MAIN);
+  const std::vector<Bytes> protocols{
+      Number(1, 1),
+      Join({Number(1, 1), Number(2, proto::V2_DEVICE_STATUS_GET), String(3, "synthetic schema")}),
+      Join({Number(1, 1), String(2, "synthetic-build"), Number(3, proto::V2_DEVICE_STATUS_GET)})};
+  for (const auto& protocol : protocols) {
+    OneKeySession session(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+    V2Peer peer;
+    BeginInitializeV2(session, peer);
+    const auto status = peer.reply(session, proto::V2_PROTOCOL_INFO, protocol);
+    CHECK(V2Request(status).type == proto::V2_DEVICE_STATUS_GET);
+    CHECK_FALSE(session.initialized());
+    REQUIRE(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status()).type == OneKeyStepType::COMPLETE);
+    REQUIRE(session.initialized());
+    CHECK_FALSE(session.deviceInfo().supports_raw_psbt);
+    CHECK(V2Request(session.getMasterFingerprint()).type == proto::V2_DEVICE_STATUS_GET);
+    CHECK(V2Request(peer.reply(session, proto::V2_DEVICE_STATUS, V2Status())).type == proto::V2_SESSION_GET);
+    CHECK(V2Request(peer.reply(session, proto::V2_SESSION, V2SessionResponse())).type == proto::GET_PUBLIC_KEY);
+    const auto signer = TestSigner(1);
+    REQUIRE(peer.reply(session, proto::PUBLIC_KEY, PublicKeyResponse(signer, "m/0h")).type == OneKeyStepType::COMPLETE);
+    CHECK(session.result<GetMasterFingerprintResult>().master_fingerprint == signer.GetMasterFingerprint());
+  }
+}
+
+TEST_CASE("OneKey Pro 2 rejects unknown capabilities and invalid legacy status") {
+  CoreUtils::getInstance().SetChain(Chain::MAIN);
+  OneKeySession current(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+  V2Peer current_peer;
+  BeginInitializeV2(current, current_peer);
+  const auto unsupported = current_peer.reply(current, proto::V2_PROTOCOL_INFO,
+      Join({Number(1, 1), String(2, "synthetic-build")}));
+  REQUIRE(unsupported.type == OneKeyStepType::FAILED);
+  REQUIRE(unsupported.error.has_value());
+  CHECK(unsupported.error->code == OneKeyErrorCode::UNSUPPORTED_FIRMWARE);
+  CHECK(unsupported.error->message.find("60602") != std::string::npos);
+  CHECK_FALSE(current.initialized());
+
+  OneKeySession legacy(Chain::MAIN, OneKeyTransport::BLE, OneKeyProtocol::V2);
+  V2Peer legacy_peer;
+  BeginInitializeV2(legacy, legacy_peer);
+  CHECK(V2Request(legacy_peer.reply(legacy, proto::V2_PROTOCOL_INFO, Number(1, 1))).type == proto::V2_DEVICE_STATUS_GET);
+  CHECK(legacy_peer.reply(legacy, proto::V2_DEVICE_STATUS, {}).type == OneKeyStepType::FAILED);
+  CHECK_FALSE(legacy.initialized());
+  CHECK_THROWS(legacy.getMasterFingerprint());
+}
 
 TEST_CASE("OneKey Protocol V2 framing matches SDK vectors and rejects corrupt frames") {
   // Golden vectors from the local hardware-js-sdk CRC table and frame layout.
